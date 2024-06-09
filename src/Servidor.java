@@ -6,29 +6,43 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class Servidor {
 
-    public static void main(String argv[]) throws Exception {
-        LinkedList<Usuario> conectados = new LinkedList<>();
-        LinkedList<Socket> semaforo = new LinkedList<>();
-        AtomicInteger contador = new AtomicInteger();
+    private final static char identificadorComandoParaServidor = '!';
 
+    public static boolean isCommandToServer(String message){
+        return !message.isEmpty() && message.charAt(0) == identificadorComandoParaServidor;
+    }
+
+    public static String generateServerMessage(String message){
+        return "\033[1;3;30;42mMensagem do servidor: "+message+"\033[0m";
+    }
+
+    public static void main(String argv[]) throws Exception
+    {
+        LinkedList<Usuario> usuariosConectados = new LinkedList<>();
+        LinkedList<Socket> usuariosPendentes = new LinkedList<>();
 
         ServerSocket welcomeSocket = new ServerSocket(6789);
 
-
-        Runnable connectionHandler = () -> {
-            while (true) {
-                try {
+        Runnable connectionHandler = () -> 
+        {
+            while (true) 
+            {
+                try 
+                {
                     System.out.println("Waiting for a new connection...");
                     Socket connectionSocket = welcomeSocket.accept();
                     System.out.println("New connection accepted from " + connectionSocket.getInetAddress().getHostAddress());
-                    synchronized (semaforo) {
-                        semaforo.add(connectionSocket);
-                        BufferedReader inFromClient = new BufferedReader(new InputStreamReader(semaforo.getFirst().getInputStream()));
+
+                    synchronized (usuariosPendentes) 
+                    {
+                        usuariosPendentes.add(connectionSocket);
+                        BufferedReader inFromClient = new BufferedReader(new InputStreamReader(usuariosPendentes.getFirst().getInputStream()));
                         Singleton.nome = inFromClient.readLine();
                     }
-
-
-                } catch (IOException e) {
+                    
+                } 
+                catch (IOException e) 
+                {
                     e.printStackTrace();
                     break;
                 }
@@ -39,144 +53,212 @@ public class Servidor {
         connectionThread.start();
 
         Runnable userHandler = () -> {
-            while (true) {
+            while (true)
+            {
+                boolean enviaMensagemDoUsuarioParaTodos = true;
+                String mensagem = null;
+                int quantidadeUsuariosConectados;
+                int removeuUsuario = 0;
 
-                    String msg = null;
-                    String msgSubst;
-                    int colonIndex;
-                    int quantConectados;
+                synchronized (usuariosConectados)
+                {
+                    quantidadeUsuariosConectados = usuariosConectados.size();
+                }
 
-                    synchronized (conectados){
-                        quantConectados = conectados.size();
-                    }
-                    for (int i=0; i<quantConectados; i++) {
-                        try {
-                            Usuario usuarioReceive = conectados.get(i);
-                            if(usuarioReceive.getInFromClient().ready()){
-                                msg = usuarioReceive.getInFromClient().readLine();
-                                colonIndex = msg.indexOf(':');
-                                String command = msg.substring(colonIndex + 2).trim();
-                                if(!command.isEmpty() && command.charAt(0) == '!'){
-                                    if(!usuarioReceive.isVote() && Singleton.contador > 0) {
-                                        if (command.equalsIgnoreCase("!sim")) {
-                                            usuarioReceive.setAccept(true);
-                                            usuarioReceive.setVote(true);
-                                            Singleton.contador--;
-                                            System.out.println("Usuário '"+usuarioReceive.getNome()+"' aceitou. isAccept: true, isVote: true");
-                                        }
-                                        else
+                for (int i=0; i<quantidadeUsuariosConectados-removeuUsuario; i++)
+                {
+                    try
+                    {
+                        Usuario usuarioReceive = usuariosConectados.get(i);
+                        if(usuarioReceive.getInFromClient().ready())
+                        {
+                            mensagem = usuarioReceive.getInFromClient().readLine();
+
+                            if(isCommandToServer(mensagem)) // identifica se a mensagem recebida é válida e é algum tipo de comando ao servidor
+                            {
+                                if(!usuarioReceive.isVote() && Singleton.contador > 0) //usuário não votou e tem alguém tentando conectar
+                                {
+                                    if (mensagem.equalsIgnoreCase(identificadorComandoParaServidor+"sim"))
+                                    {
+                                        usuarioReceive.setAccept(true);
+                                        usuarioReceive.setVote(true);
+                                        Singleton.contador--;
+
+                                        System.out.println("Usuário '"+usuarioReceive.getNome()+"' aceitou.");
+                                    }
+                                    else if (mensagem.equalsIgnoreCase(identificadorComandoParaServidor+"nao"))
+                                    {
+                                        usuarioReceive.setAccept(false);
+                                        usuarioReceive.setVote(true);
+                                        Singleton.contador--;
+
+                                        System.out.println("Usuário não aceitou.");
+
+                                    }
+                                    else
+                                    {
+                                        System.out.println("Comando não reconhecido. Mensagem ignorada.");
+                                    }
+
+                                }
+                                else if (Singleton.contador == 0) // não tem nenhuma ação do servidor sendo executada
+                                {
+                                    if (mensagem.equalsIgnoreCase(identificadorComandoParaServidor+"sair")) // usuário está querendo sair?
+                                    {
+                                        Usuario usuarioSaindo = usuarioReceive;
+                                        System.out.println("'"+usuarioSaindo.getNome()+"' optou por sair do chat.\n");
+
+                                        for (int j=0; j<quantidadeUsuariosConectados; j++)
                                         {
-                                            if (command.equalsIgnoreCase("!nao")) {
-                                                usuarioReceive.setAccept(false);
-                                                usuarioReceive.setVote(true);
-                                                Singleton.contador--;
-                                                System.out.println("Usuário não aceitou. isAccept: false, isVote: true");
-                                            } else {
-                                                System.out.println("Comando não reconhecido. Mensagem ignorada.");
+                                            Usuario usuarioSend = usuariosConectados.get(j);
+                                            if (usuarioSend != usuarioSaindo) // o usuário a enviar a mensagem é diferente do que está saindo?
+                                            {
+                                                usuarioSend.getOutToClient().writeBytes(generateServerMessage("'"+usuarioSaindo.getNome()+"' saiu do chat.\n"));
+                                            }
+                                            else
+                                            {
+                                                usuarioSaindo.getOutToClient().writeBytes("@FIN@\n"); // envia mensagem de FIN para finalizar o socket do lado do cliente
                                             }
                                         }
-                                    }
-                                }
-                                for (int j=0; j<quantConectados; j++) {
-                                    Usuario usuarioSend = conectados.get(j);
-                                    if (usuarioSend != usuarioReceive) {
-                                    try {
-                                        usuarioSend.getOutToClient().writeBytes(msg + "\n");
-                                    } catch (IOException e) {
-                                        throw new RuntimeException(e);
-                                    }
+
+                                        usuariosConectados.remove(i); //remove o usuário da lista
+                                        usuarioSaindo.getConnectionSocket().close(); //fecha o socket
+                                        enviaMensagemDoUsuarioParaTodos = false;
+                                        removeuUsuario = 1;
                                     }
                                 }
                             }
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
+
+                            if (enviaMensagemDoUsuarioParaTodos)
+                            {
+                                for (int j=0; j<quantidadeUsuariosConectados; j++)
+                                {
+                                    Usuario usuarioSend = usuariosConectados.get(j);
+                                    if (usuarioSend != usuarioReceive)
+                                    {
+                                        try
+                                        {
+                                            usuarioSend.getOutToClient().writeBytes("\033[1m"+usuarioReceive.getNome()+":\033[0m "+mensagem + "\n");
+                                        }
+                                        catch (IOException e)
+                                        {
+                                            throw new RuntimeException(e);
+                                        }
+                                    }
+                                }
+                            }
                         }
+
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
                     }
                 }
-
+            }
         };
 
         Thread userThread = new Thread(userHandler);
         userThread.start();
 
         Runnable managerHandler = () -> {
-            synchronized (contador) {
-                while (true) {
-                    try {
-                        synchronized (semaforo) {
-                            if (!semaforo.isEmpty()) {
-                                if (semaforo.getFirst().isConnected()) {
-                                    if (conectados.isEmpty()) {
-                                        Singleton.aux = semaforo.getFirst();
-                                        semaforo.removeFirst();
+            while (true) {
+                try {
+                    synchronized (usuariosPendentes)
+                    {
+                        if (!usuariosPendentes.isEmpty())
+                        {
+                            if (usuariosPendentes.getFirst().isConnected())
+                            {
+                                if (usuariosConectados.isEmpty())
+                                {
+                                    System.out.println("-----------------\nPRIMEIRO USUÁRIO\n-----------------");
+                                    Singleton.aux = usuariosPendentes.getFirst();
+                                    usuariosPendentes.removeFirst();
+                                    Usuario usuario = new Usuario(true, Singleton.aux);
+                                    usuario.setNome(Singleton.nome);
+
+                                    synchronized (usuariosConectados)
+                                    {
+                                        usuariosConectados.add(usuario);
+                                    }
+
+                                    usuario.getOutToClient().writeBytes("OK\n");
+                                    usuario.getOutToClient().writeBytes(generateServerMessage("Bem vindo ao chat, " + usuario.getNome() + "!\n"));
+                                }
+                                else
+                                {
+                                    System.out.println("-----------------\nVOTAÇÃO INICIADA\n-----------------");
+                                    Singleton.contador = usuariosConectados.size();
+                                    for(Usuario users : usuariosConectados)
+                                    {
+                                        users.getOutToClient().writeBytes(generateServerMessage("'"+Singleton.nome+"' quer entrar ao chat ("+identificadorComandoParaServidor+"sim para aceitar e "+identificadorComandoParaServidor+"nao para recusar)\n"));
+                                    }
+
+                                    while (Singleton.contador > 0) // aguarda enquanto todos os usuários não responderem
+                                    {
+                                        Thread.sleep(4000); // Pausa a execução da thread por 5 segundos
+                                        System.out.println("Faltam: " + Singleton.contador + " usuários votar(em).");
+                                    }
+                                    System.out.println("-----------------\nVOTAÇÃO FINALIZADA\n-----------------");
+
+                                    boolean usuarioAceito = true; // por default, o usuário foi aceito
+                                    for (Usuario usuario : usuariosConectados) // percorre a resposta de todos
+                                    {
+                                        if (!usuario.isAccept()) // o usuário atual não aceitou o novo usuário?
+                                        {
+                                            usuarioAceito = false; // seta que o novo usuário não foi aceito.
+                                        }
+
+                                        usuario.setVote(false); // reseta a votação
+                                    }
+
+                                    if (usuarioAceito) // o novo usuário foi aceito?
+                                    {
+                                        Singleton.aux = usuariosPendentes.removeFirst(); //pega o primeiro dos pendentes
+
                                         Usuario usuario = new Usuario(true, Singleton.aux);
                                         usuario.setNome(Singleton.nome);
-                                        synchronized (conectados) {
-                                            conectados.add(usuario);
-                                        }
-                                        usuario.getOutToClient().writeBytes("OK\n");
-                                    }
-                                    else {
-                                        Singleton.contador = conectados.size();
-                                        for(Usuario users : conectados)
+
+                                        usuario.getOutToClient().writeBytes("OK\n"); // envia ao cliente que ele foi permitido
+
+                                        usuariosConectados.add(usuario); // adiciona o cliente a lista de conectados
+
+                                        for(Usuario users : usuariosConectados) // percorre todos os conectados
                                         {
-                                            users.getOutToClient().writeBytes("Mensagem do Servidor: O usuario '"+Singleton.nome+"' esta tentando se conectar (!sim para aceitar e !nao para recusar)" + '\n');
-                                        }
-
-                                        while (Singleton.contador > 0) // trava enquanto todos não votarem
-                                        {
-                                            Thread.sleep(4000); // Pausa a execução da thread por 5 segundos
-                                            System.out.println("Aguardando votação finalizar... Faltam: " + Singleton.contador + " usuários votar(em).");
-                                        }
-                                        System.out.println("-----------------\nVOTAÇÃO FINALIZADA\n-----------------");
-
-
-                                        boolean accept = true;
-                                        for (Usuario usuario : conectados) {
-                                            if (!usuario.isAccept()) {
-                                                accept = false;
-                                            }
-                                            usuario.setVote(false);
-                                        }
-
-                                        if (accept) {
-                                            Singleton.aux = semaforo.getFirst();
-                                            semaforo.removeFirst();
-                                            Usuario usuario = new Usuario(true, Singleton.aux);
-                                            usuario.setNome(Singleton.nome);
-                                            usuario.getOutToClient().writeBytes("OK\n");
-                                            conectados.add(usuario);
-                                            for(Usuario users : conectados)
+                                            if(users == usuario) // se o usuário for igual ao que está entrando no chat
                                             {
-                                                if(users == usuario)
-                                                {
-                                                    users.getOutToClient().writeBytes("Mensagem do Servidor: Bem vindo ao chat " + Singleton.nome + "!" + '\n');
-                                                }
-                                                users.getOutToClient().writeBytes("Mensagem do Servidor: O usuario '"+Singleton.nome+ "' foi aceito no chat" + '\n');
+                                                users.getOutToClient().writeBytes(generateServerMessage("Bem vindo ao chat, " + Singleton.nome + "!\n"));
                                             }
-                                        } else {
-                                            Usuario usuario = new Usuario(true, semaforo.getFirst());
-                                            usuario.getOutToClient().writeBytes("Conexão Recusada.\n");
-                                            usuario = null;
-                                            semaforo.getFirst().close();
-                                            semaforo.removeFirst();
+                                            else // se for qualquer outro usuário
+                                            {
+                                                users.getOutToClient().writeBytes(generateServerMessage("'"+Singleton.nome+ "' entrou no chat.\n"));
+                                            }
                                         }
                                     }
-                                } else {
-                                    semaforo.getFirst().close();
-                                    semaforo.removeFirst();
+                                    else
+                                    {
+                                        Usuario usuario = new Usuario(true, usuariosPendentes.getFirst());
+                                        usuario.getOutToClient().writeBytes(generateServerMessage("Você não foi permitido :(.\n"));
+                                        usuario = null;
+
+                                        usuariosPendentes.getFirst().close();
+                                        usuariosPendentes.removeFirst();
+                                    }
                                 }
+                            } else {
+                                usuariosPendentes.getFirst().close();
+                                usuariosPendentes.removeFirst();
                             }
                         }
-                    } catch (Exception ex) {
-                        System.out.println(ex);
                     }
+                } catch (Exception ex) {
+                    System.out.println(ex.getMessage());
                 }
             }
         };
+
+
         Thread managerThread = new Thread(managerHandler);
         managerThread.start();
-
     }
 }
 
